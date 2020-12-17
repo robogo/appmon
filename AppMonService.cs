@@ -19,10 +19,20 @@ namespace appmon
 {
     public partial class AppMonService : ServiceBase
     {
-        const int QueryCommand = 200;
-        const int AddTimeCommand = 201;
-        const int RemoveTimeCommand = 202;
-        const int EmailCommand = 203;
+        enum CMD
+        {
+            Help = 200,
+            QueryTime = 201,
+            AddTime = 202,
+            RemoveTime = 203,
+            SendEmail = 204,
+            EnableDebug = 205,
+            DisableDebug = 206,
+            ChangeSession = 207,
+            AddFive = 13,
+            RemoveFive = 14,
+        };
+
         public const string Name = "appmon";
         string appName;
         string appKeyword;
@@ -62,11 +72,37 @@ namespace appmon
             this.timer?.Dispose();
         }
 
+        // command is between 128 and 255. Integers below 128 correspond to system-reserved values.
         protected override void OnCustomCommand(int command)
         {
-            switch (command)
+            CMD cmd = (CMD)command;
+            int time = 10;
+            if (cmd < CMD.Help)
             {
-                case QueryCommand:
+                cmd = (CMD)(command / 10);
+                int val = command % 10;
+                switch (cmd)
+                {
+                    case CMD.AddFive:
+                        cmd = CMD.AddTime;
+                        time = val * 5;
+                        break;
+                    case CMD.RemoveFive:
+                        cmd = CMD.RemoveTime;
+                        time = val * 5;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            switch (cmd)
+            {
+                case CMD.Help:
+                    string info = string.Join("\r\n", Enum.GetValues(typeof(CMD)).Cast<CMD>().Select(c => $"{c}{new string(' ', 16 - c.ToString().Length)}\t{(int)c}").ToArray());
+                    this.notification.Show("Info", info, 20);
+                    break;
+                case CMD.QueryTime:
                     int quota = IsWeekend(DateTime.Now) ? this.weekend : this.weekday;
                     int used = this.usedSeconds / 60;
                     int remaining = Math.Max(0, quota + this.bonus - used);
@@ -83,20 +119,30 @@ namespace appmon
                     }
                     this.notification.Show("Info", sb.ToString(), 0);
                     break;
-                case AddTimeCommand:
-                    this.bonus += 10;
+                case CMD.AddTime:
+                    this.bonus += time;
+                    EventLog.WriteEntry(Name, $"Added {time} minutes.", EventLogEntryType.Information);
                     break;
-                case RemoveTimeCommand:
-                    this.bonus -= 10;
+                case CMD.RemoveTime:
+                    this.bonus -= time;
+                    EventLog.WriteEntry(Name, $"Removed {time} minutes.", EventLogEntryType.Information);
                     break;
-                case EmailCommand:
+                case CMD.EnableDebug:
+                case CMD.DisableDebug:
+                    this.debug = cmd == CMD.EnableDebug;
+                    EventLog.WriteEntry(Name, $"Updated debug to {this.debug}.", EventLogEntryType.Information);
+                    break;
+                case CMD.ChangeSession:
+                    this.notification.SessionId = (this.notification.SessionId + 1) % 5 + 1;
+                    EventLog.WriteEntry(Name, $"Session ID changed to {this.notification.SessionId}.", EventLogEntryType.Information);
+                    break;
+                case CMD.SendEmail:
                     this.Email();
                     break;
                 default:
+                    EventLog.WriteEntry(Name, $"Unknown control code:{command}.", EventLogEntryType.Warning);
                     break;
             }
-
-            base.OnCustomCommand(command);
         }
 
         public void Init()
@@ -115,10 +161,7 @@ namespace appmon
             this.usedSeconds = (int)(this.activeTimes.Select(tr => tr.EndTicks - tr.StartTicks).Sum() / 10000000);
             this.lastTime = DateTime.Now;
             this.running = false;
-            if (this.debug)
-            {
-                EventLog.WriteEntry(Name, "Service initialized", EventLogEntryType.Information);
-            }
+            EventLog.WriteEntry(Name, $"app:{this.appName}, keyword:{this.appKeyword}, weekday:{this.weekday}, weekend:{this.weekend}, interval:{this.interval}, session:{sesionId}, used:{this.usedSeconds}.", EventLogEntryType.Information);
         }
 
         public static void Monitor(object state)
@@ -135,6 +178,7 @@ namespace appmon
                     int used = thisPtr.usedSeconds / 60;
                     int remaining = Math.Max(0, quota + thisPtr.bonus - used);
                     thisPtr.bonus = Math.Min(remaining, 60);
+                    EventLog.WriteEntry(Name, $"Data reset on a new day. quota:{quota}, used:{used}, remaining:{remaining}, bonus:{thisPtr.bonus}", EventLogEntryType.Information);
 
                     lock (thisPtr.activeTimes)
                     {
@@ -144,19 +188,12 @@ namespace appmon
                     thisPtr.lastTime = now;
                     thisPtr.running = false;
                     thisPtr.usedSeconds = 0;
-                    if (thisPtr.debug)
-                    {
-                        EventLog.WriteEntry(Name, $"Data reset on a new day. Roll over: {thisPtr.bonus}", EventLogEntryType.Information);
-                    }
                 }
                 else if (now.Subtract(last + thisPtr.interval) > TimeSpan.FromSeconds(30))
                 {
                     thisPtr.lastTime = now;
                     thisPtr.running = false;
-                    if (thisPtr.debug)
-                    {
-                        EventLog.WriteEntry(Name, "Reset due to missing updates", EventLogEntryType.Information);
-                    }
+                    EventLog.WriteEntry(Name, $"Reset due to missing updates. last:{last}", EventLogEntryType.Information);
                 }
 
                 string query = $"SELECT Name, CommandLine, ProcessId, Caption, ExecutablePath FROM Win32_Process WHERE Name = '{thisPtr.appName}'";
@@ -395,7 +432,7 @@ namespace appmon
             this.SessionId = sessionId;
         }
 
-        public int SessionId { get; private set; }
+        public int SessionId { get; internal set; }
 
         public async void Show(string title, string message, int timeout)
         {
