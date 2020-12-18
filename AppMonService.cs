@@ -279,8 +279,6 @@ namespace appmon
                             EventLog.WriteEntry(Name, "Found process. Start counting", EventLogEntryType.Information);
                         }
                     }
-
-                    thisPtr.lastTime = now;
                 }
                 else
                 {
@@ -300,6 +298,8 @@ namespace appmon
                         }
                     }
                 }
+
+                thisPtr.lastTime = now;
             }
             catch (Exception exception)
             {
